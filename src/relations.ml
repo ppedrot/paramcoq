@@ -20,10 +20,10 @@ let (set_parametricity_tactic, get_parametricity_tactic, print_parametricity_tac
 module IntMap = Map.Make(Int)
 module GMap = GlobRef.Map
 
-
 let initial_translations = GMap.empty
 let initial_relations = IntMap.empty
 
+let bases = Summary.ref initial_relations ~name:"parametricity-bases"
 let relations = Summary.ref initial_relations ~name:"parametricity"
 
 let print_relations () = 
@@ -55,7 +55,45 @@ let in_relation = declare_object {(default_object "PARAMETRICITY") with
  
 let declare_relation n x x_R = 
  Lib.add_leaf (in_relation (n, x, x_R))
- 
+
+let cache_base (gr, grs) =
+  let arity = Array.length grs in
+  let old = match IntMap.find_opt arity !bases with
+  | None -> GMap.empty
+  | Some old -> old
+  in
+  let map = GMap.add gr grs old in
+  bases := IntMap.add arity map !bases
+
+let subst_base (subst, (gr, grs)) =
+  let gr = subst_global_reference subst gr in
+  let grs = CArray.Smart.map (fun gr -> Option.map (fun gr -> subst_global_reference subst gr) gr) grs in
+  (gr, grs)
+
+let discharge_base (gr, grs) =
+  (* FIXME: not correct actually *)
+  Some (gr, grs)
+
+let in_base = declare_object {(default_object "PARAMETRICITY-BASE") with 
+  cache_function = cache_base;
+  load_function = (fun _ -> cache_base);
+  subst_function = subst_base;
+  classify_function = (fun obj -> Substitute);
+  discharge_function = discharge_base
+}
+
+let declare_heterogeneous gr grs =
+  let map grn = if GlobRef.UserOrd.equal gr grn then None else Some grn in
+  let grs = List.map map grs in
+  let grs = Array.of_list grs in
+  Lib.add_leaf (in_base (gr, grs))
+
+let get_heterogeneous gr ~arity ~pos =
+  let map = IntMap.find arity !bases in
+  match (GMap.find gr map).(pos) with
+  | None -> raise Not_found
+  | Some gr -> gr
+
 let declare_constant_relation (n : int) (c : Constant.t) (c_R : Constant.t) =
   declare_relation n (GlobRef.ConstRef c) (GlobRef.ConstRef c_R)
 

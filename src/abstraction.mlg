@@ -134,6 +134,13 @@ VERNAC COMMAND EXTEND TranslateModule CLASSIFIED AS SIDEFF STATE opaque_access
   }
 END
 
+VERNAC COMMAND EXTEND Register CLASSIFIED AS SIDEFF STATE opaque_access
+| [ "Parametricity" "Register" global(qid) ":=" global_list(qids) ] ->
+  {
+    register_command qid qids
+  }
+END
+
 VERNAC COMMAND EXTEND Realizer CLASSIFIED AS SIDEFF STATE opaque_access
 | [ "Realizer" constr(c) "as" ident(name) ":=" constr(t) ] ->
   {

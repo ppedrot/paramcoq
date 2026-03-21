@@ -15,6 +15,31 @@ open EConstr
 open Debug
 open Parametricity
 
+let is_heterogeneous_ref arity pos ref =
+  try
+    let () = ignore (Relations.get_heterogeneous ref ~arity ~pos : Names.GlobRef.t) in
+    false
+  with Not_found ->
+    true
+
+(*
+let check_heterogenerous_ref arity ref =
+  if List.exists (fun i -> is_heterogeneous_ref arity i ref) (range (fun i -> i) arity) then
+    CErrors.user_err Pp.(str "Missing base translation for " ++ Printer.pr_global ref)
+*)
+
+let is_heterogeneous env sigma arity pos c =
+  let exception Outside in
+  let rec check c = match EConstr.destRef sigma c with
+  | (ref, _) ->
+    if is_heterogeneous_ref arity pos ref then raise Outside
+  | exception Constr.DestKO -> EConstr.iter sigma check c
+  in
+  try
+    let _ = check c in
+    false
+  with Outside -> true
+
 [@@@ocaml.warning "-40"]
 let error = CErrors.user_err
 let ongoing_translation = Summary.ref false ~name:"parametricity ongoing translation"
@@ -78,7 +103,7 @@ let declare_abstraction ~opaque_access ?(opaque = false) ?(continuation = defaul
   let b = Retyping.get_type_of env !evdr a in
   let module P = WithOpaqueAccess(struct let access = opaque_access end) in
   let b_R = P.relation arity evdr env b in
-  let sub = range (fun k -> prime !evdr arity k a) arity in
+  let sub = range (fun k -> prime env evdr arity k a) arity in
   let b_R = EConstr.Vars.substl sub b_R in
   let a_R = fun evd ->
     let evdr = ref evd in
@@ -146,7 +171,7 @@ let declare_realizer ~opaque_access ?(continuation = default_continuation) ?kind
   evd := evd';
   let module P = Parametricity.WithOpaqueAccess(struct let access = opaque_access end) in
   let typ_R = P.relation arity evd env typ in
-  let sub = range (fun _ -> var) arity in
+  let sub = range (fun i -> Parametricity.prime env evd arity i var) arity in
   let typ_R = Vars.substl sub typ_R in
   let cpt = ref 0 in
   let real =
@@ -197,6 +222,35 @@ let realizer_command ~opaque_access arity name var real =
   RetrieveObl.check_evars env sigma;
   let real = fun sigma -> Constrintern.interp_open_constr env sigma real in
   ignore(declare_realizer ~opaque_access arity (ref sigma) env name var ~real)
+
+let register_command ~opaque_access src tgts =
+  let env = Global.env () in
+  let sigma = Evd.from_env env in
+  let src = intern_reference_to_name src in
+  let tgts = List.map intern_reference_to_name tgts in
+  let order = List.length tgts in
+  let get_type sigma gr =
+    let sigma, c = Evd.fresh_global env sigma gr in
+    sigma, Retyping.get_judgment_of env sigma c
+  in
+  let sigma, srcj = get_type sigma src in
+  let iter i tgt =
+    (* Check that the type of the provided constant is compatible with the translated one *)
+    let sigma, tgtj = get_type sigma tgt in
+    let evdref = ref sigma in
+    let typ_i = Parametricity.prime env evdref order i srcj.Environ.uj_type in
+    let sigma = !evdref in
+    let sigma, _ = Typing.type_of env sigma typ_i in
+    let _ =
+      try Evarconv.unify_leq_delay env sigma tgtj.Environ.uj_type typ_i
+      with Evarconv.UnableToUnify (sigma, e) ->
+        Pretype_errors.error_actual_type env sigma tgtj typ_i e
+    in
+    (* Ignore the result, this will be enforced when translating the relation *)
+    ()
+  in
+  let () = List.iteri iter tgts in
+  Relations.declare_heterogeneous src tgts
 
 let rec list_continuation final f l _ = match l with [] -> final ()
    | hd::tl -> f (list_continuation final f tl) hd
@@ -459,6 +513,10 @@ let translate_command ~opaque_access arity c name =
   let (evd, c) = Constrintern.interp_open_constr env evd c in
   let cte_option =
     match kind evd c with Const cte -> Some cte | _ -> None
+  in
+  let () =
+    if List.exists (fun i -> is_heterogeneous env evd arity i c) (range (fun i -> i) arity) then
+      CErrors.user_err Pp.(str "Missing base translation for " ++ Printer.pr_leconstr_env env evd c)
   in
   let poly, opaque =
     match cte_option with

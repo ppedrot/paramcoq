@@ -12,7 +12,7 @@
 val new_evar_compat :
   Environ.env -> Evd.evar_map -> EConstr.types -> Evd.evar_map * EConstr.t
 val default_arity : int
-val prime : Evd.evar_map -> int -> int -> EConstr.t -> EConstr.t
+val prime : Environ.env -> Evd.evar_map ref -> int -> int -> EConstr.t -> EConstr.t
 val translate_string : int -> string -> string
 val translate_id : int -> Names.Id.t -> Names.Id.t
 val range : (int -> 'a) -> int -> 'a list

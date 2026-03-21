@@ -139,11 +139,20 @@ let prop_or_type _env _evdr s = s
  * c[x_index/x,y_index/y, z_index/z] and is well-defined in:
  *    x_1, x_2, ...,x_order, x_R, y_1, y_2, ..., y_order, y_R, z1, z_2, ..., z_order, z_R
  * *)
-let prime sigma order index c =
-  let rec aux depth c = match kind sigma c with
+let prime env sigma order index c =
+  let rec aux depth c = match kind !sigma c with
     | Rel i ->
         if i <= depth then c else mkRel (depth + (order + 1) * (i - depth)  - index)
-    | _ -> map_with_binders sigma ((+) 1) aux depth c
+    | Var _ | Const _ | Ind _ | Construct _ ->
+      let (gr, _) = destRef !sigma c in
+      begin match Relations.get_heterogeneous gr ~arity:order ~pos:index with
+      | ngr ->
+        let evd, c = Evd.fresh_global env !sigma ngr in
+        let () = sigma := evd in
+        c
+      | exception Not_found -> c
+      end
+    | _ -> map_with_binders !sigma ((+) 1) aux depth c
   in aux 0 c
 
 (* [translate_string] provides a generic name for the translation of identifiers. *)
@@ -282,7 +291,7 @@ let rec relation order evd env (t : constr) : constr =
         let x_R = Context.map_annot (translate_name order) x in
         let prods = range (fun k ->
           (Context.map_annot (prime_name order k) x,
-           lift (order + k) (prime !evd order k a))) order in
+           lift (order + k) (prime env evd order k a))) order in
         compose_prod prods (mkProd (x_R, a_R, b_R))
         (* |G|, f1, f2 |- forall x_1, x_2, x_R, [f1 x1, f2 x2] in |b| *)
     | _ ->
@@ -301,7 +310,7 @@ let rec relation order evd env (t : constr) : constr =
     let env_R = translate_env order evd env in
     let na = Namegen.named_hd env !evd t Anonymous in
     let rel = Retyping.relevance_of_type env !evd t in
-    let lams = range (fun k -> (Context.make_annot (prime_name order k na) rel, None, lift k (prime !evd order k t))) order in
+    let lams = range (fun k -> (Context.make_annot (prime_name order k na) rel, None, lift k (prime env evd order k t))) order in
     let env_R = push_rel_context (List.map toDecl lams) env_R in
     debug_mode := true;
     debug [`Relation] "output =" env_R !evd res;
@@ -322,14 +331,14 @@ and translate order evd env (t : constr) : constr =
         (* [..., _ : t'', _ : t', _ : t] *)
         let na = Namegen.named_hd env !evd t Anonymous in
         let rel = Retyping.relevance_of_type env !evd t in
-        let lams = range (fun k -> (Context.make_annot (prime_name order k na) rel, lift k (prime !evd order k t))) order in
+        let lams = range (fun k -> (Context.make_annot (prime_name order k na) rel, lift k (prime env evd order k t))) order in
         compose_lam lams (relation order evd env t)
 
     | App (c,l) ->
         let l = List.rev (Array.to_list l) in
         let l_R = List.flatten (List.map (fun x ->
            (translate order evd env x)::
-           (range (fun k -> prime !evd order k x) order)) l) in
+           (range (fun k -> prime env evd order k x) order)) l) in
         applist (translate order evd env c, List.rev l_R)
 
     | Var i -> translate_variable order env evd i
@@ -337,13 +346,13 @@ and translate order evd env (t : constr) : constr =
     | Cast (c, k, t) ->
         let c_R = translate order evd env c in
         let t_R = relation order evd env t in
-        let sub = range (fun k -> prime !evd order k c) order in
+        let sub = range (fun k -> prime env evd order k c) order in
         let t_R = substl sub t_R in
         mkCast (c_R, k, t_R)
 
     | Lambda (x, a, m) ->
         let lams = range (fun k ->
-          (Context.map_annot (prime_name order k) x, lift k (prime !evd order k a))) order
+          (Context.map_annot (prime_name order k) x, lift k (prime env evd order k a))) order
         in
         let x_R = Context.map_annot (translate_name order) x in
         let a_R = relation order evd env a in
@@ -352,7 +361,7 @@ and translate order evd env (t : constr) : constr =
 
     | LetIn (x, b, t, c) ->
         fold_nat (fun k acc ->
-           mkLetIn (Context.map_annot (prime_name order k) x, lift k (prime !evd order k b), lift k (prime !evd order k t), acc))
+           mkLetIn (Context.map_annot (prime_name order k) x, lift k (prime env evd order k b), lift k (prime env evd order k t), acc))
            (mkLetIn (Context.map_annot (translate_name order) x, lift order (translate order evd env b), relation order evd env t,
             let env = push_rel (toDecl (x, Some b, t)) env in
             translate order evd env c)) order
@@ -382,7 +391,7 @@ and translate order evd env (t : constr) : constr =
         debug [`Case] "t:" env_lams !evd t;
         let t_R = relation order evd env_lams t in
         debug [`Case] "t_R:" empty_env !evd t_R;
-        let sub = range (fun k -> prime !evd order k theta) order in
+        let sub = range (fun k -> prime env evd order k theta) order in
         debug_string [`Case] "substitution :"; List.iter (debug [`Case] "" Environ.empty_env !evd) sub;
         let t_R = substl sub t_R in
         debug [`Case] "t_R" Environ.empty_env !evd t_R;
@@ -478,8 +487,8 @@ and translate_rel_context order evd env rc =
      let typ_R = relation order evd env typ in
      let l = range (fun k ->
        toDecl (Context.map_annot (prime_name order k) x,
-        Option.map (fun x -> lift k (prime !evd order k x)) def,
-        lift k (prime !evd order k typ)) ) order
+        Option.map (fun x -> lift k (prime env evd order k x)) def,
+        lift k (prime env evd order k typ)) ) order
      in
      let env = push_rel decl env in
      env, ((toDecl ((x_R, Option.map (lift order) def_R, typ_R))::l))::acc) ~init:(env, []) rc
@@ -532,8 +541,8 @@ and translate_cofix order evd env t =
     else
       let k = k-1 in
       let r = lna.(n).binder_relevance in
-      let fix_k = lift (n*order + k) (prime !evd order k fix) in
-      let typ_k = lift (n*order + k) (prime !evd order k typ) in
+      let fix_k = lift (n*order + k) (prime env evd order k fix) in
+      let typ_k = lift (n*order + k) (prime env evd order k typ) in
       let acc = mkLetIn (Context.make_annot (Name (Id.of_string (Printf.sprintf "fix_%s_%d" name (k+1)))) r,
                            fix_k, typ_k, acc) in
       letfix name fix typ n k acc
@@ -570,7 +579,7 @@ and translate_cofix order evd env t =
      let bk_R = liftn (nfun * order) (ft_R_len + order + 1) bk_R in
      let sub = range (fun k ->
                   mkApp (mkRel (ft_R_len + (nfun - n)*order - k ),
-                     Array.map (prime !evd order k) (Context.Rel.instance mkRel 0 ft)))
+                     Array.map (prime env evd order k) (Context.Rel.instance mkRel 0 ft)))
                order
      in
      compose_prod_decls (lift_rel_context (nfun * order) ft_R) (substl sub bk_R)) ftbk_R
@@ -633,8 +642,8 @@ and translate_fix order evd env t =
     else
       let k = k-1 in
       let r = lna.(n).binder_relevance in
-      let fix_k = lift (n*order + k) (prime !evd order k fix) in
-      let typ_k = lift (n*order + k) (prime !evd order k typ) in
+      let fix_k = lift (n*order + k) (prime env evd order k fix) in
+      let typ_k = lift (n*order + k) (prime env evd order k typ) in
       let acc = mkLetIn (Context.make_annot (Name (Id.of_string (Printf.sprintf "fix_%s_%d" name (k+1)))) r,
                            fix_k, typ_k, acc) in
       letfix name fix typ n k acc
@@ -673,7 +682,7 @@ and translate_fix order evd env t =
      let bk_R = liftn (nfun * order) (ft_R_len + order + 1) bk_R in
      let sub = range (fun k ->
                   mkApp (mkRel (ft_R_len + (nfun - n)*order - k ),
-                     Array.map (prime !evd order k) (Context.Rel.instance mkRel 0 ft)))
+                     Array.map (prime env evd order k) (Context.Rel.instance mkRel 0 ft)))
                order
      in
      compose_prod_decls (lift_rel_context (nfun * order) ft_R) (substl sub bk_R)) ftbk_R
@@ -753,7 +762,7 @@ and translate_fix order evd env t =
                              else lift (i_nargs + 1) x) fun_args
         in
         let theta = inst_args (depth + i_nargs + 1) fun_args_i in
-        let sub = range (fun k -> prime !evd order k theta) order in
+        let sub = range (fun k -> prime env evd order k theta) order in
         let lams, typ = decompose_lambda_n_decls !evd (i_nargs + 1) p in
         debug [`Fix] "theta = " (push_rel_context lams env) !evd theta;
         debug [`Fix] "theta = " Environ.empty_env !evd theta;
@@ -858,7 +867,7 @@ and rewrite_fixpoints order evdr env (depth : int) (fix : fixpoint) source targe
       let env_R = translate_env order evdr env in
       let rel = Retyping.relevance_of_type env !evdr typ in
       let rc_order = rev_range (fun k -> Context.make_annot (Name (Id.of_string (Printf.sprintf "rel_%d" k))) rel, None,
-                                         lift k (prime !evdr order k typ)) order in
+                                         lift k (prime env evdr order k typ)) order in
       let env_R' = push_rel_context (List.map toDecl rc_order) env_R in
       debug [`Fix] "typ_R =" env_R' !evdr typ_R;
       env_R
@@ -889,20 +898,20 @@ and rewrite_fixpoints order evdr env (depth : int) (fix : fixpoint) source targe
   let res1 =
     (fold_nat (fun k acc ->
     let pred_sub =
-      (range (fun x -> lift 1 (prime evd order (k+1+x) target)) (order-1 - k))
+      (range (fun x -> lift 1 (prime env evdr order (k+1+x) target)) (order-1 - k))
       @ [ mkRel 1 ]
-      @ (range (fun x -> lift 1 (prime evd order x source)) k)
+      @ (range (fun x -> lift 1 (prime env evdr order x source)) k)
     in
     let sort = Retyping.get_type_of env !evdr typ in
     let r = Retyping.relevance_of_type env !evdr typ in
     CoqConstants.add_constraints evdr sort;
-    let index = lift 1 (prime evd order k typ) in
+    let index = lift 1 (prime env evdr order k typ) in
     let pred = mkLambda (mkannot (Name (Id.of_string "x")) r, index, liftn 1 2 (substl pred_sub (liftn 1 (order + 1) typ_R))) in
     debug [`Fix] "pred = " env_R' !evdr pred;
-    let base = lift 1 (prime evd order k source) in
-    let endpoint = lift 1 (prime evd order k target) in
+    let base = lift 1 (prime env evdr order k source) in
+    let endpoint = lift 1 (prime env evdr order k target) in
     let path = mkApp (mkRel 1,
-       Array.map (fun x -> lift 1 (prime evd order k x)) new_vec)
+       Array.map (fun x -> lift 1 (prime env evdr order k x)) new_vec)
     in
     CoqConstants.transport env evdr
           [| index;
@@ -971,7 +980,7 @@ and rewrite_cofixpoints order evdr env (depth : int) (fix : cofixpoint) source t
   if List.exists (fun x -> List.mem x [`Fix]) debug_flag then begin
     let env_R = translate_env order evdr env in
     let rc_order = rev_range (fun k -> mkannot (Name (Id.of_string (Printf.sprintf "rel_%d" k))) r, None,
-                         lift k (prime !evdr order k typ)) order in
+                         lift k (prime env evdr order k typ)) order in
     let env_R = push_rel_context (List.map toDecl rc_order) env_R in
     debug [`Fix] "typ_R =" env_R !evdr typ_R
   end;
@@ -994,16 +1003,16 @@ and rewrite_cofixpoints order evdr env (depth : int) (fix : cofixpoint) source t
   let let_gen acc = mkLetIn (mkannot (Name (Id.of_string "gen_path")) ERelevance.relevant, hole, gen_path, acc) in
   let_gen @@ (fold_nat (fun k acc ->
     let pred_sub =
-      (range (fun x -> lift 1 (prime evd order (k+1+x) target)) (order-1 - k))
+      (range (fun x -> lift 1 (prime env evdr order (k+1+x) target)) (order-1 - k))
       @ [ mkRel 1 ]
-      @ (range (fun x -> lift 1 (prime evd order x source)) k)
+      @ (range (fun x -> lift 1 (prime env evdr order x source)) k)
     in
-    let index = lift 1 (prime evd order k typ) in
+    let index = lift 1 (prime env evdr order k typ) in
     let pred = mkLambda (mkannot (Name (Id.of_string "x")) r, index, liftn 1 2 (substl pred_sub (liftn 1 (order + 1) typ_R))) in
-    let base = lift 1 (prime evd order k source) in
-    let endpoint = lift 1 (prime evd order k target) in
+    let base = lift 1 (prime env evdr order k source) in
+    let endpoint = lift 1 (prime env evdr order k target) in
     let path = mkApp (mkRel 1,
-       Array.map (fun x -> lift 1 (prime evd order k x))
+       Array.map (fun x -> lift 1 (prime env evdr order k x))
         (Context.Rel.instance mkRel 0 (List.map toDecl env_rc)))
     in
     let sort = Retyping.get_type_of env !evdr typ in
@@ -1228,7 +1237,7 @@ and translate_mind_inductive name order evdr env ikn mut_entry inst (env_params,
       let arity_R = relation order evdr env_params arity in
       let inds = List.rev (fold_nat
          (fun k acc ->
-           prime !evdr order k
+           prime env evdr order k
             (apply_head_variables_ctxt (mkIndU (ikn, EInstance.make inst)) params)::acc) [] order) in
       debug_string [`Inductive] "Substitution:";
       List.iter (debug [`Inductive] "" Environ.empty_env Evd.empty) inds;
@@ -1294,7 +1303,7 @@ and translate_mind_inductive name order evdr env ikn mut_entry inst (env_params,
           in
           debug_string [`Inductive] (Printf.sprintf "constructor n°%d" k);
           let third_part =
-            range (fun m -> prime !evdr order m
+            range (fun m -> prime env evdr order m
                       (apply_head_variables_ctxt (mkConstructU  ((ikn, k + 1), EInstance.make inst)) params)) order in
           let final_substitution = third_part @ second_part @ (first_part) in
           debug_string [`Inductive] "substitution :";

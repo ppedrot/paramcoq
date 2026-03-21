@@ -36,3 +36,6 @@ val command_reference_recursive :
 val translate_command :
   opaque_access:Global.indirect_accessor ->
   int -> Constrexpr.constr_expr -> Names.Id.t -> unit
+val register_command :
+  opaque_access:Global.indirect_accessor ->
+  Libnames.qualid -> Libnames.qualid list -> unit
