@@ -51,6 +51,9 @@ val realizer_base_type_command :
 val realizer_base_term_command :
   opaque_access:Global.indirect_accessor ->
   Libnames.qualid -> unit
+val realizer_register_command :
+  opaque_access:Global.indirect_accessor ->
+  int -> Libnames.qualid -> Libnames.qualid -> unit
 val compute_base_type :
   Environ.env -> Evd.evar_map ref -> EConstr.t -> EConstr.t
 val compute_base_term :

@@ -631,3 +631,67 @@ let realizer_base_term_command ~opaque_access qid =
   let ans = compute_realizer_term ~opaque_access env evdref c in
   let sigma = !evdref in
   Feedback.msg_notice (Printer.pr_leconstr_env env sigma ans)
+
+let realizer_register_command ~opaque_access arity base_qid realizer_qid =
+  let env = Global.env () in
+  let sigma = Evd.from_env env in
+  let base_gr = intern_reference_to_name base_qid in
+  let realizer_gr = intern_reference_to_name realizer_qid in
+  let sigma, base_c = Evd.fresh_global env sigma base_gr in
+  let sigma, realizer_c = Evd.fresh_global env sigma realizer_gr in
+  let evdref = ref sigma in
+  let module P = Parametricity.WithOpaqueAccess(struct let access = opaque_access end) in
+  let sigma', base_typ = Typing.type_of env !evdref base_c in
+  evdref := sigma';
+  let typ_R = P.relation arity evdref env base_typ in
+  let sub = range (fun i -> Parametricity.prime env evdref arity i base_c) arity in
+  let typ_R = Vars.substl sub typ_R in
+  let realizer_typ = Retyping.get_type_of env !evdref realizer_c in
+  let _sigma =
+    try Evarconv.unify_leq_delay env !evdref realizer_typ typ_R
+    with Evarconv.UnableToUnify (sigma, e) ->
+      let cj = { Environ.uj_val = realizer_c; uj_type = realizer_typ } in
+      Pretype_errors.error_actual_type env sigma cj typ_R e
+  in
+  Relations.declare_relation arity base_gr realizer_gr;
+  Pp.(Feedback.msg_info (str "'" ++ Printer.pr_global realizer_gr ++ str "' is now a registered translation for '"
+    ++ Printer.pr_global base_gr ++ str "'."))
+
+(* Ltac2 external registrations *)
+let () =
+  let open Proofview.Notations in
+  let open Ltac2_plugin.Tac2ffi in
+  let open Ltac2_plugin.Tac2externals in
+  let plugin = "coq-paramcoq.plugin" in
+  let opaque_access = Library.indirect_accessor in
+  let define name spec f =
+    define { Ltac2_plugin.Tac2expr.mltac_plugin = plugin; mltac_tactic = name } spec f
+  in
+  define "parametricity_base_type" (constr @-> tac constr) (fun c ->
+    Proofview.tclENV >>= fun env ->
+    Proofview.tclEVARMAP >>= fun sigma ->
+    let evdref = ref sigma in
+    let ans = compute_base_type env evdref c in
+    Proofview.Unsafe.tclEVARS !evdref >>= fun () ->
+    Proofview.tclUNIT ans);
+  define "parametricity_base_term" (constr @-> tac constr) (fun c ->
+    Proofview.tclENV >>= fun env ->
+    Proofview.tclEVARMAP >>= fun sigma ->
+    let evdref = ref sigma in
+    let ans = compute_base_term ~opaque_access env evdref c in
+    Proofview.Unsafe.tclEVARS !evdref >>= fun () ->
+    Proofview.tclUNIT ans);
+  define "realizer_base_type" (constr @-> tac constr) (fun c ->
+    Proofview.tclENV >>= fun env ->
+    Proofview.tclEVARMAP >>= fun sigma ->
+    let evdref = ref sigma in
+    let ans = compute_realizer_type ~opaque_access env evdref c in
+    Proofview.Unsafe.tclEVARS !evdref >>= fun () ->
+    Proofview.tclUNIT ans);
+  define "realizer_base_term" (constr @-> tac constr) (fun c ->
+    Proofview.tclENV >>= fun env ->
+    Proofview.tclEVARMAP >>= fun sigma ->
+    let evdref = ref sigma in
+    let ans = compute_realizer_term ~opaque_access env evdref c in
+    Proofview.Unsafe.tclEVARS !evdref >>= fun () ->
+    Proofview.tclUNIT ans)

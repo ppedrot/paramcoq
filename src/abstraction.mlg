@@ -166,6 +166,14 @@ VERNAC COMMAND EXTEND Realizer CLASSIFIED AS SIDEFF STATE opaque_access
   {
     realizer_base_term_command qid
   }
+| [ "Realizer" "Register" global(realizer) "for" global(base) ] ->
+  {
+    realizer_register_command Parametricity.default_arity base realizer
+  }
+| [ "Realizer" "Register" global(realizer) "for" global(base) "arity" integer(arity) ] ->
+  {
+    realizer_register_command arity base realizer
+  }
 | [ "Realizer" constr(c) "as" ident(name) ":=" constr(t) ] ->
   {
     realizer_command Parametricity.default_arity (Some name) c t
